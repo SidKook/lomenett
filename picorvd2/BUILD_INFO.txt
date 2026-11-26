@@ -1,0 +1,1 @@
+built from CrapSnackleFlop/picorvd2 commit 71004c7, cmake -DPICORVD_SWIO_PIN=17, PICO_BOARD=pico2, SDK 2.2.0

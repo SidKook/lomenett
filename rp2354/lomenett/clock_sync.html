@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lomenett Clock Sync</title>
+<style>
+  :root { --bg: #101214; --panel: #181b1f; --line: #2a2f36; --text: #e6e8eb; --muted: #8b939c;
+          --accent: #5aa9e6; --bad: #e66a5a; --good: #6ad08a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px 14px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06121c; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  #status { color: var(--muted); } #status.ok { color: var(--good); } #status.err { color: var(--bad); }
+  #now { font: 28px ui-monospace, monospace; margin: 10px 0 18px; }
+  #nosupport { display: none; background: #3a1d1a; border: 1px solid var(--bad); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lomenett Clock Sync</h1>
+  <p class="sub">The device has no battery-backed clock, so 2FA codes need the time from this computer after every power-on.
+    Click once to pick the device; while this page stays open it re-syncs by itself whenever the device is plugged in or reboots.</p>
+  <div id="nosupport">This browser can't talk to USB serial. Open this file in Chrome or Edge on a laptop or desktop.</div>
+  <div id="now">--</div>
+  <div class="bar">
+    <button id="sync" class="primary">Connect &amp; sync</button>
+    <span id="status">Not synced</span>
+  </div>
+</main>
+<script>
+const statusEl = document.getElementById('status');
+function setStatus(text, cssClass = '') { statusEl.textContent = text; statusEl.className = cssClass; }
+setInterval(() => { document.getElementById('now').textContent = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC'; }, 250);
+
+// Open the port, send "time <unix>", wait up to 2 s for "clock set", then
+// close so the port is free for other tools.
+async function syncPort(port) {
+  try {
+    await port.open({ baudRate: 115200 });
+    await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+    const writer = port.writable.getWriter(), reader = port.readable.getReader(), decoder = new TextDecoder();
+    await writer.write(new TextEncoder().encode('\ntime ' + Math.floor(Date.now() / 1000) + '\n'));
+    let received = '', confirmed = false;
+    const deadline = performance.now() + 2000;
+    while (performance.now() < deadline && !confirmed) {
+      const timeout = new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 300));
+      const result = await Promise.race([reader.read(), timeout]);
+      if (result.done) break;
+      if (result.value) received += decoder.decode(result.value, { stream: true });
+      confirmed = received.includes('clock set');
+    }
+    await reader.cancel().catch(() => {}); reader.releaseLock(); writer.releaseLock();
+    await port.close();
+    if (confirmed) setStatus('Synced at ' + new Date().toLocaleTimeString(), 'ok');
+    else setStatus('Sent the time but the device did not confirm. Older firmware?', 'err');
+  } catch (error) {
+    try { await port.close(); } catch (_) {}
+    setStatus(error.message, 'err');
+  }
+}
+
+if (!('serial' in navigator)) {
+  document.getElementById('nosupport').style.display = 'block';
+  document.getElementById('sync').disabled = true;
+} else {
+  document.getElementById('sync').onclick = async () => {
+    try { await syncPort(await navigator.serial.requestPort()); } catch (error) { setStatus(error.message, 'err'); }
+  };
+  // Previously picked ports: sync on plug-in, after the device's 3 s USB wait.
+  navigator.serial.addEventListener('connect', event => { setStatus('Device plugged in, syncing...'); setTimeout(() => syncPort(event.target), 3500); });
+  navigator.serial.getPorts().then(ports => { if (ports.length) syncPort(ports[0]); });
+}
+</script>
+</body>
+</html>
